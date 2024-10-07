@@ -143,8 +143,9 @@ def bilinear_interpolation(img, coords):
 
     return interpolated_colors
 
-def compute_intermediate(im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac):
+def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac, save_intermediate=False, save_morphed=False):
     assert im1.shape == im2.shape
+    assert len(im1_pts) == len(im2_pts)
     morphed_img1 = np.zeros_like(im1)
     morphed_img2 = np.zeros_like(im1)
     avg_img = np.zeros_like(im1)
@@ -153,16 +154,22 @@ def compute_intermediate(im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_fr
     avg_pts = im2_pts * warp_frac + im1_pts * (1-warp_frac)
 
     for i, j, k in tri.simplices:
-        # Compute affine transformation matrix for both images (from intermediate to source image)
         avg_tri = np.array((avg_pts[i], avg_pts[j], avg_pts[k]))
         img1_tri = np.array((im1_pts[i], im1_pts[j], im1_pts[k]))
         img2_tri = np.array((im2_pts[i], im2_pts[j], im2_pts[k]))
-        A = compute_affine(avg_tri, img1_tri)
-        B = compute_affine(avg_tri, img2_tri)
 
         # Get the coordinates inside the triangle in the average image
         row_coords, col_coords = polygon(avg_tri[:, 0], avg_tri[:, 1])
         avg_tri_coords = np.array(list(zip(row_coords, col_coords)))
+
+
+        # Edge case when triangle is so "slim" it contains no pixels
+        if len(avg_tri_coords) == 0:
+            continue
+
+        # Compute affine transformation matrix for both images (from intermediate to source image)
+        A = compute_affine(avg_tri, img1_tri)
+        B = compute_affine(avg_tri, img2_tri)
 
         # Apply the transformation matrices to the average triangle
         avg_tri_coords_matrix = np.column_stack(homogeneous_coords(avg_tri_coords))
@@ -181,27 +188,71 @@ def compute_intermediate(im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_fr
             morphed_img1[r,c] = img1_preimage_colors[idx]
             morphed_img2[r,c] = img2_preimage_colors[idx]
             avg_img[r,c] = averaged_colors[idx]
+
+    if save_intermediate:
+        # Save midway image
+        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', avg_img)
+    
+    if save_morphed:
+        # Save image1 and image2 morphed into the shape of the intermediate
+        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im1_name}_intermediate.jpg', morphed_img1)
+        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im2_name}_intermediate.jpg', morphed_img2)
     
     return avg_img
 
-    # Display midway image
-    display_img(morphed_img1)
-    display_img(morphed_img2)
-    display_img(avg_img)
 
-    # Save midway image
-    skio.imsave(f'../images/{img1_name}_to_{img2_name}.jpg', midway_img)
+def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve_frac=1/45, frames=45):
+    """
+    Morph multiple images, step by step, each using a new triangulation. Generates a GIF of the morphing sequence.
 
+    Parameters:
+    -----------
+    im_names : list of str
+        A list of the names of the images being morphed.
+    ims : list of np.array
+        A list of image arrays to be morphed from the first to the last in sequence.
+    corresponding_keypoints : list of tuple
+        A list of corresponding keypoints between successive image pairs. Each element is a tuple of 
+        (keypoints_im1, keypoints_im2) for each pair of consecutive images.
+    save_intermediate : bool
+        If True, saves intermediate frames of the morphing sequence.
+    save_morphed : bool
+        If True, saves the morphed version of each image into the averaged shape.
+    warp_frac : float, optional
+        The fraction of the warp applied at each morphing step (default is 1/45).
+    dissolve_frac : float, optional
+        The fraction of the dissolve applied at each morphing step (default is 1/45).
+    frames : int, optional
+        The number of frames to generate between each consecutive image pair (default is 45).
 
-# Morph im1 to im2 using the triangulation 
-def morph(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac=1/45, dissolve_frac=1/45, frames=45):
+    Returns:
+    --------
+    None
+    """
+    n = len(ims)
     morph_sequence = []
-    for t in range(frames+1):
-        morph_sequence.append(compute_intermediate(im1, im2, im1_pts, im2_pts, tri, warp_frac * t, dissolve_frac * t))
 
-    # Save a GIF of the morph sequence
-    save_gif(morph_sequence, f'../images/{im1_name}_to_{im2_name}.gif')
+    assert len(corresponding_keypoints) == n - 1
 
+    for i in range(n-1):
+        im1, im2 = ims[i], ims[i+1]
+        im1_name, im2_name = im_names[i], im_names[i+1]
+        im1_pts, im2_pts = corresponding_keypoints[i]
+        avg_pts = (im1_pts + im2_pts) / 2
+        triangulation = Delaunay(avg_pts)
+        # display_triangulation(avg_pts, triangulation)
+        for t in range(frames+1):
+            morph_sequence.append(compute_intermediate(
+                im1_name, im2_name, im1, im2, im1_pts, im2_pts, triangulation, warp_frac * t, dissolve_frac * t
+            ))
+
+    im_names_str = "_to_" .join(im_names)
+    save_gif(morph_sequence, f'../images/{im_names_str}.gif')
+
+
+
+# Saves a GIF, morphing forward then backward
 def save_gif(morph_sequence, output_path, duration=100):
     images = [Image.fromarray((image_array).astype(np.uint8)) for image_array in morph_sequence]
-    images[0].save(output_path, save_all=True, append_images=images[1:], duration=duration, loop=0)
+    images_reversed = images[::-1]
+    images[0].save(output_path, save_all=True, append_images=images + images_reversed, duration=duration, loop=0)

@@ -3,40 +3,34 @@ from scipy.spatial import Delaunay
 import skimage.io as skio
 import numpy as np
 
-from utils import display_img_with_keypoints, display_img, pick_and_record_keypoints, compute_intermediate, morph
+from utils import pick_and_record_keypoints, morph_multi
 
-# ===== Part 0: Parameters =====
-PICK_KEYPOINTS = False
-img1_name = 'tzuyu'
-img2_name = 'minjoo'
+# Main driver function. 
+def morph_driver(im_names, pick_keypoints=False):
+    # ===== Part 1: Defining Correspondences =====
+    n = len(im_names)
+    ims = [skio.imread(f'../data/{name}.jpg') for name in im_names]
+    corresponding_keypoints = [] # Contains pairs of keypoints lists for each pair of adjacent images, [(im1_keypoints, im2_keypoints), (im2_keypoints, im3_keypoints), ...]
+    for i in range(1, n):
+        im1, im2 = ims[i-1], ims[i]
+        im1_name, im2_name = im_names[i-1], im_names[i]
+        json_path = f'../data/{im1_name}_{im2_name}.json'
+        if pick_keypoints:
+            # Query user for keypoints and save them
+            im1_keypoints, im2_keypoints = pick_and_record_keypoints(im1, im2, json_path)
+            im1_keypoints, im2_keypoints = np.array(im1_keypoints), np.array(im2_keypoints)
+        else:
+            # Reuse the last keypoints for this image pair
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            im1_keypoints, im2_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
+        
+        corresponding_keypoints.append((im1_keypoints, im2_keypoints))
+    
+    morph_multi(im_names, ims, corresponding_keypoints)
 
-# ===== Part 1: Defining Correspondences =====
-# Define and display the shapes for each image
-img1 = skio.imread(f'../data/{img1_name}.jpg')
-img2 = skio.imread(f'../data/{img2_name}.jpg')
-json_path = f'../data/{img1_name}_{img2_name}.json'
-
-if PICK_KEYPOINTS:
-    # Query user for keypoints and save them
-    img1_keypoints, img2_keypoints = pick_and_record_keypoints(img1, img2, json_path)
-    img1_keypoints, img2_keypoints = np.array(img1_keypoints), np.array(img2_keypoints)
-else:
-    # Reuse the last keypoints for this image pair
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-    img1_keypoints, img2_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
-
-# display_img_with_keypoints(img1, img1_keypoints)
-# display_img_with_keypoints(img2, img2_keypoints)
-
-# ===== Part 2: Computing the "Mid-way Face" =====
-# Compute triangulation of average shape -- this will be used throughout the morphing sequence
-avg_keypoints = (img1_keypoints + img2_keypoints) / 2
-triangulation = Delaunay(avg_keypoints)
-
-midway_img = compute_intermediate(img1, img2, img1_keypoints, img2_keypoints, triangulation, 1/2, 1/2)
-# display_img(midway_img)
-# skio.imsave(f'../images/{img1_name}_to_{img2_name}.jpg', midway_img)
-
-# ===== Part 3: The Morph Sequence =====
-morph(img1_name, img2_name, img1, img2, img1_keypoints, img2_keypoints, triangulation)
+# morph_driver(['ethan', 'shai'])
+# morph_driver(['tzuyu', 'minjoo'])
+# morph_driver(['lia', 'julie'])
+# morph_driver(['ethan_young', 'ethan_now'])
+# morph_driver(['ethan_kuo', 'ehong_kuo', 'dad_kuo', 'mom_kuo', 'ejean_kuo'])
