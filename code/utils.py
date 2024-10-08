@@ -7,8 +7,9 @@ import skimage.io as skio
 from scipy.spatial import Delaunay
 from skimage.draw import polygon
 from PIL import Image
+import os
 
-
+# ===== I/O Helpers =====
 def pick_and_record_keypoints(img1, img2, json_path):
     # Create empty lists to store the points for each image
     points_img1 = []
@@ -90,6 +91,35 @@ def display_triangulation(keypoints, triangulation):
     plt.gca().invert_yaxis()
     plt.show()
 
+# Saves a GIF, morphing forward then backward
+def save_gif(morph_sequence, output_path, duration=100):
+    images = [Image.fromarray((image_array).astype(np.uint8)) for image_array in morph_sequence]
+    images_reversed = images[::-1]
+    images[0].save(output_path, save_all=True, append_images=images + images_reversed, duration=duration, loop=0)
+
+def parse_keypoints(path):
+    keypoints = []
+    with open(path, 'r') as file:
+        lines = file.readlines()
+
+        # Skip the first two lines (version and n_points) and the opening brace
+        lines = lines[3:]
+
+        # Parse each line containing coordinates, and stop at the closing brace
+        for line in lines:
+            if '}' in line:
+                break
+            x, y = map(float, line.split())
+            keypoints.append([y, x])
+
+    # Append the four corners to keypoints
+    keypoints.extend([[0,0], [299,0], [299,249], [0,249]])
+    return np.array(keypoints)
+
+
+
+
+# ===== Algorithmic helpers =====
 
 # Compute an affine transformation matrix between 2 triangles
 def compute_affine(tri1, tri2):
@@ -132,20 +162,25 @@ def bilinear_interpolation(img, coords):
     x = np.arange(width)
     y = np.arange(height)
 
-    # For each color channel (R, G, B), perform bilinear interpolation
-    interpolated_colors = []
-    for c in range(3):
-        interpolator = RegularGridInterpolator((y, x), img[:, :, c], bounds_error=False, fill_value=None)
-        interpolated_colors.append(interpolator(coords))
-
-    # Stack the interpolated results for R, G, B channels into shape (n, 3)
-    interpolated_colors = np.stack(interpolated_colors, axis=-1)
+    if len(img.shape) == 2: # Grayscale image
+        interpolator = RegularGridInterpolator((y, x), img, bounds_error=False, fill_value=None)
+        interpolated_colors = interpolator(coords)
+    else: # RGB image
+        interpolated_colors = []
+        for c in range(3):
+            interpolator = RegularGridInterpolator((y, x), img[:, :, c], bounds_error=False, fill_value=None)
+            interpolated_colors.append(interpolator(coords))
+        interpolated_colors = np.stack(interpolated_colors, axis=-1)
 
     return interpolated_colors
 
 
-# Morph an image into a new shape using a given triangulation
-def morph_into(src_name, src_im, src_pts, dst_name, dst_pts, tri, save_morphed=False):
+
+# Morph an image into a new shape. Default triangulation is the Delaunay triangulation on the destination geometry.
+def morph_into(src_name, src_im, src_pts, dst_name, dst_pts, tri=None, save_morphed=False):
+    if tri is None:
+        tri = Delaunay(dst_pts)
+
     dst_im = np.zeros_like(src_im)
     for i, j, k in tri.simplices:
         dst_tri = np.array((dst_pts[i], dst_pts[j], dst_pts[k]))
@@ -179,7 +214,7 @@ def morph_into(src_name, src_im, src_pts, dst_name, dst_pts, tri, save_morphed=F
     
     return dst_im
 
-# Given 2 corresponding images and a triangulation, compute an intermediate morphed image between the 2
+# Compute an intermediate morphing between 2 images
 def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac, save_intermediate=False, save_morphed=False):
     assert im1.shape == im2.shape
     assert len(im1_pts) == len(im2_pts)
@@ -197,65 +232,6 @@ def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, wa
     if save_intermediate:
         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', intermediate_im)
     return intermediate_im.astype(np.uint8)
-
-
-# Given 2 corresponding images and a triangulation, compute an intermediate morphed image between the 2
-# def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac, save_intermediate=False, save_morphed=False):
-#     assert im1.shape == im2.shape
-#     assert len(im1_pts) == len(im2_pts)
-#     morphed_img1 = np.zeros_like(im1)
-#     morphed_img2 = np.zeros_like(im1)
-#     avg_img = np.zeros_like(im1)
-
-#     # Compute the intermediate shape based on the warp fraction
-#     avg_pts = im2_pts * warp_frac + im1_pts * (1-warp_frac)
-
-#     for i, j, k in tri.simplices:
-#         avg_tri = np.array((avg_pts[i], avg_pts[j], avg_pts[k]))
-#         img1_tri = np.array((im1_pts[i], im1_pts[j], im1_pts[k]))
-#         img2_tri = np.array((im2_pts[i], im2_pts[j], im2_pts[k]))
-
-#         # Get the coordinates inside the triangle in the average image
-#         row_coords, col_coords = polygon(avg_tri[:, 0], avg_tri[:, 1])
-#         avg_tri_coords = np.array(list(zip(row_coords, col_coords)))
-
-
-#         # Edge case when triangle is so "slim" it contains no pixels
-#         if len(avg_tri_coords) == 0:
-#             continue
-
-#         # Compute affine transformation matrix for both images (from intermediate to source image)
-#         A = compute_affine(avg_tri, img1_tri)
-#         B = compute_affine(avg_tri, img2_tri)
-
-#         # Apply the transformation matrices to the average triangle
-#         avg_tri_coords_matrix = np.column_stack(homogeneous_coords(avg_tri_coords))
-#         img1_preimage_coords_matrix = A @ avg_tri_coords_matrix
-#         img2_preimage_coords_matrix = B @ avg_tri_coords_matrix
-
-#         # Sample colors for each preimage using bilinear interpolation
-#         img1_preimage_coords = img1_preimage_coords_matrix[:2].T # unpack the raw coordiantes from homogeneous matrix
-#         img2_preimage_coords = img2_preimage_coords_matrix[:2].T
-#         img1_preimage_colors = bilinear_interpolation(im1, img1_preimage_coords)
-#         img2_preimage_colors = bilinear_interpolation(im2, img2_preimage_coords)
-
-#         # Assign averaged colors to the average triangle
-#         averaged_colors = img2_preimage_colors * dissolve_frac + img1_preimage_colors * (1-dissolve_frac)
-#         for idx, (r, c) in enumerate(avg_tri_coords):
-#             morphed_img1[r,c] = img1_preimage_colors[idx]
-#             morphed_img2[r,c] = img2_preimage_colors[idx]
-#             avg_img[r,c] = averaged_colors[idx]
-
-#     if save_intermediate:
-#         # Save midway image
-#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', avg_img)
-    
-#     if save_morphed:
-#         # Save image1 and image2 morphed into the shape of the intermediate
-#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im1_name}_intermediate.jpg', morphed_img1)
-#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im2_name}_intermediate.jpg', morphed_img2)
-    
-#     return avg_img
 
 
 def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve_frac=1/45, frames=45):
@@ -295,8 +271,11 @@ def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve
         im1, im2 = ims[i], ims[i+1]
         im1_name, im2_name = im_names[i], im_names[i+1]
         im1_pts, im2_pts = corresponding_keypoints[i]
+
+        # Derive a triangulation for the key points using the average shape
         avg_pts = (im1_pts + im2_pts) / 2
         triangulation = Delaunay(avg_pts)
+
         for t in range(frames+1):
             morph_sequence.append(compute_intermediate(
                 im1_name, im2_name, im1, im2, im1_pts, im2_pts, triangulation, warp_frac * t, dissolve_frac * t
@@ -305,10 +284,110 @@ def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve
     im_names_str = "_to_" .join(im_names)
     save_gif(morph_sequence, f'../images/{im_names_str}.gif')
 
+# Computes the mean of all faces.
+def compute_mean_face(faces, geometries):
+
+    # Compute the average shape and triangulate
+    stacked_geometries = np.stack(geometries, axis=0)
+    average_geometry = np.mean(stacked_geometries, axis=0)
+    triangulation = Delaunay(average_geometry)
+
+    # Morph each image into the average shape
+    mean_face = np.zeros_like(faces[0]).astype(np.float64)
+    for i in range(len(faces)):
+        morphed_face = morph_into('', faces[i], geometries[i], '', average_geometry, triangulation)
+        mean_face += morphed_face.astype(np.float64)
+
+    # Compute the mean face by averaging all the morphed faces
+    return (mean_face / len(faces)).astype(np.uint8)
 
 
-# Saves a GIF, morphing forward then backward
-def save_gif(morph_sequence, output_path, duration=100):
-    images = [Image.fromarray((image_array).astype(np.uint8)) for image_array in morph_sequence]
-    images_reversed = images[::-1]
-    images[0].save(output_path, save_all=True, append_images=images + images_reversed, duration=duration, loop=0)
+# ===== Driver functions =====
+
+# Gathers image and key points data, then runs morphing algorithm across all images
+def morph(im_names, pick_keypoints=False):
+    n = len(im_names)
+    ims = [skio.imread(f'../data/{name}.jpg') for name in im_names]
+    corresponding_keypoints = [] # Contains pairs of keypoints lists for each pair of adjacent images, [(im1_keypoints, im2_keypoints), (im2_keypoints, im3_keypoints), ...]
+    for i in range(1, n):
+        im1, im2 = ims[i-1], ims[i]
+        im1_name, im2_name = im_names[i-1], im_names[i]
+        json_path = f'../data/{im1_name}_{im2_name}.json'
+        if pick_keypoints:
+            # Query user for keypoints and save them
+            im1_keypoints, im2_keypoints = pick_and_record_keypoints(im1, im2, json_path)
+            im1_keypoints, im2_keypoints = np.array(im1_keypoints), np.array(im2_keypoints)
+        else:
+            # Reuse the last keypoints for this image pair
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            im1_keypoints, im2_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
+        
+        corresponding_keypoints.append((im1_keypoints, im2_keypoints))
+    
+    morph_multi(im_names, ims, corresponding_keypoints)
+
+
+# Computes the mean face from the given data. Then morphs the given image into the mean face, and morphs the mean face into the given image.
+def mean_face_driver(id, mean_face_name, im, im_name, compute_mean_face=False, pick_keypoints=False):
+    if compute_mean_face:
+        # Read in relevant data
+        images_dir = '../data/brazilian_faces'
+        keypoints_dir = '../data/brazilian_faces_keypoints'
+
+        image_paths = sorted([f for f in os.listdir(images_dir) if id in f and f.endswith('.jpg')])
+        keypoint_paths = sorted([f for f in os.listdir(keypoints_dir) if id in f and f.endswith('.pts')])
+
+        full_image_paths = [images_dir + '/' + f for f in image_paths]
+        full_keypoint_paths = [keypoints_dir + '/' + f for f  in keypoint_paths]
+
+        faces = [skio.imread(path) for path in full_image_paths]
+        geometries = [parse_keypoints(path) for path in full_keypoint_paths]
+
+        # Compute mean face
+        mean_face = compute_mean_face(faces, geometries)
+        skio.imsave(f'../images/{mean_face_name}.jpg', mean_face)
+    else:
+        # Load mean face
+        mean_face = skio.imread(f'../images/{mean_face_name}.jpg')
+
+    # Define correspondances between image and mean face
+    json_path = f'../data/{im_name}_{mean_face_name}.json'
+    if pick_keypoints:
+        im_keypoints, mean_face_keypoints = pick_and_record_keypoints(im, mean_face, json_path)
+        im_keypoints, mean_face_keypoints = np.array(im_keypoints), np.array(mean_face_keypoints)
+    else:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        im_keypoints, mean_face_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
+
+    # Morph image into the mean face, and vice versa
+    morph_into(im_name, im, im_keypoints, mean_face_name, mean_face_keypoints, save_morphed=True)
+    morph_into(mean_face_name, mean_face, mean_face_keypoints, im_name, im_keypoints, save_morphed=True)
+
+
+# Produce an exaggerated version of a face relative to a base face.
+def caricature(face_name, face, base_face_name, base_face, alpha=1.5, pick_keypoints=False):
+    # Define correspondances
+    json_path = f'../data/{face_name}_{base_face_name}.json'
+    if pick_keypoints:
+        face_keypoints, base_keypoints = pick_and_record_keypoints(face, base_face, json_path)
+        face_keypoints, base_keypoints = np.array(face_keypoints), np.array(base_keypoints)
+    else:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        face_keypoints, base_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
+
+    # Compute difference vectors for the key points
+    difference_vectors = face_keypoints - base_keypoints
+
+    # Compute target geometry (exaggerated face)
+    target_keypoints = face_keypoints + alpha * difference_vectors
+
+    # Clip the row and column coordinates to the image bounds
+    target_keypoints[:, 0] = np.clip(target_keypoints[:, 0], 0, face.shape[0] - 1)
+    target_keypoints[:, 1] = np.clip(target_keypoints[:, 1], 0, face.shape[1] - 1)
+
+    # Morph face into exagerated geometry
+    exaggerated_face = morph_into('', face, face_keypoints, '', target_keypoints)
+    skio.imsave(f'../images/{face_name}_{base_face_name}_caracature.jpg', exaggerated_face)
