@@ -1,5 +1,5 @@
 myenv/
-images/
+code/
 *.pyc
 .DS_Store
 data/.DS_Store

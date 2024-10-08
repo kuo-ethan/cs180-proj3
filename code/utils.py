@@ -11,7 +11,6 @@ import os
 
 # ===== I/O Helpers =====
 def pick_and_record_keypoints(img1, img2, json_path):
-    # Create empty lists to store the points for each image
     points_img1 = []
     points_img2 = []
     
@@ -39,10 +38,7 @@ def pick_and_record_keypoints(img1, img2, json_path):
         picking[0] = False
         plt.close()
 
-    # Display the two images side by side
     fig, (ax1, ax2) = plt.subplots(1, 2)
-
-    # Show images on the axes
     ax1.imshow(img1)
     ax1.set_title('Image 1')
     ax2.imshow(img2)
@@ -57,7 +53,6 @@ def pick_and_record_keypoints(img1, img2, json_path):
     fig.canvas.mpl_connect('button_press_event', onclick_img1)
     fig.canvas.mpl_connect('button_press_event', onclick_img2)
 
-    # Display the images and interact
     plt.show()
 
     # Save the points as a JSON
@@ -65,22 +60,19 @@ def pick_and_record_keypoints(img1, img2, json_path):
         "image1_keypoints": points_img1,
         "image2_keypoints": points_img2
     }
-
-    # Save the dictionary as a JSON file
     with open(json_path, 'w') as json_file:
-        json.dump(data, json_file, indent=4)  # indent=4 makes the JSON output more readable
+        json.dump(data, json_file, indent=4)
 
-    # Return the points after the user is done
     return points_img1, points_img2
 
 def display_img_with_keypoints(img, shape):
-    plt.imshow(img)
+    plt.imshow(img, cmap='gray')
     y_coords, x_coords = zip(*shape)
     plt.scatter(x_coords, y_coords, color='red', marker='o', s=50)
     plt.show()
 
 def display_img(img):
-    plt.imshow(img)
+    plt.imshow(img, cmap='gray')
     plt.show()
 
 def display_triangulation(keypoints, triangulation):
@@ -116,6 +108,36 @@ def parse_keypoints(path):
     keypoints.extend([[0,0], [299,0], [299,249], [0,249]])
     return np.array(keypoints)
 
+
+def plot_keypoints_and_vectors(base_keypoints, face_keypoints):
+    # Compute the difference vectors
+    difference_vectors = face_keypoints - base_keypoints
+    
+    # Separate the keypoints into x and y coordinates
+    base_x, base_y = base_keypoints[:, 1], base_keypoints[:, 0]
+    face_x, face_y = face_keypoints[:, 1], face_keypoints[:, 0] 
+    diff_x, diff_y = difference_vectors[:, 1], difference_vectors[:, 0]
+
+    plt.figure(figsize=(6, 6))
+    
+    # Plot base keypoints in one color
+    plt.scatter(base_x, base_y, color='blue', label='Base Keypoints', s=50)
+    
+    # Plot face keypoints in another color
+    plt.scatter(face_x, face_y, color='red', label='Face Keypoints', s=50)
+    
+    # Plot the difference vectors (arrows from base to face keypoints)
+    for i in range(len(base_keypoints)):
+        plt.arrow(base_x[i], base_y[i], diff_x[i], diff_y[i], color='green', 
+                  head_width=2, length_includes_head=True, alpha=0.6)
+
+    # Add labels and legend
+    plt.legend()
+    plt.gca().invert_yaxis()
+    plt.title('Difference Vectors Between Base and Face Keypoints')
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Y Coordinate')
+    plt.show()
 
 
 
@@ -229,9 +251,10 @@ def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, wa
 
     # Cross dissolve the morphed images to add color
     intermediate_im = morphed_im1.astype(np.float32) * (1-dissolve_frac) + morphed_im2.astype(np.float32) * dissolve_frac
+    intermediate_im = intermediate_im.astype(np.uint8)
     if save_intermediate:
         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', intermediate_im)
-    return intermediate_im.astype(np.uint8)
+    return intermediate_im
 
 
 def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve_frac=1/45, frames=45):
@@ -275,11 +298,18 @@ def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve
         # Derive a triangulation for the key points using the average shape
         avg_pts = (im1_pts + im2_pts) / 2
         triangulation = Delaunay(avg_pts)
+        
+        display_triangulation(avg_pts, triangulation)
+        display_triangulation(im1_pts, triangulation)
+        display_triangulation(im2_pts, triangulation)
 
         for t in range(frames+1):
             morph_sequence.append(compute_intermediate(
                 im1_name, im2_name, im1, im2, im1_pts, im2_pts, triangulation, warp_frac * t, dissolve_frac * t
             ))
+
+        # Also save the midway face
+        compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, triangulation, 1/2, 1/2, save_intermediate=True)
 
     im_names_str = "_to_" .join(im_names)
     save_gif(morph_sequence, f'../images/{im_names_str}.gif')
@@ -297,6 +327,8 @@ def compute_mean_face(faces, geometries):
     for i in range(len(faces)):
         morphed_face = morph_into('', faces[i], geometries[i], '', average_geometry, triangulation)
         mean_face += morphed_face.astype(np.float64)
+        if i < 2:
+            display_img(morphed_face.astype(np.uint8))
 
     # Compute the mean face by averaging all the morphed faces
     return (mean_face / len(faces)).astype(np.uint8)
@@ -323,14 +355,17 @@ def morph(im_names, pick_keypoints=False):
                 data = json.load(f)
             im1_keypoints, im2_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
         
+        display_img_with_keypoints(im1, im1_keypoints)
+        display_img_with_keypoints(im2, im2_keypoints)
+
         corresponding_keypoints.append((im1_keypoints, im2_keypoints))
     
     morph_multi(im_names, ims, corresponding_keypoints)
 
 
 # Computes the mean face from the given data. Then morphs the given image into the mean face, and morphs the mean face into the given image.
-def mean_face_driver(id, mean_face_name, im, im_name, compute_mean_face=False, pick_keypoints=False):
-    if compute_mean_face:
+def mean_face_driver(id, mean_face_name, im, im_name, new_mean_face=False, pick_keypoints=False):
+    if new_mean_face:
         # Read in relevant data
         images_dir = '../data/brazilian_faces'
         keypoints_dir = '../data/brazilian_faces_keypoints'
@@ -340,6 +375,8 @@ def mean_face_driver(id, mean_face_name, im, im_name, compute_mean_face=False, p
 
         full_image_paths = [images_dir + '/' + f for f in image_paths]
         full_keypoint_paths = [keypoints_dir + '/' + f for f  in keypoint_paths]
+
+        print(full_image_paths[0], full_image_paths[1])
 
         faces = [skio.imread(path) for path in full_image_paths]
         geometries = [parse_keypoints(path) for path in full_keypoint_paths]
@@ -378,8 +415,12 @@ def caricature(face_name, face, base_face_name, base_face, alpha=1.5, pick_keypo
             data = json.load(f)
         face_keypoints, base_keypoints = np.array(data['image1_keypoints']), np.array(data['image2_keypoints'])
 
+    display_img_with_keypoints(face, face_keypoints)
+    display_img_with_keypoints(base_face, base_keypoints)
+
     # Compute difference vectors for the key points
     difference_vectors = face_keypoints - base_keypoints
+    plot_keypoints_and_vectors(base_keypoints, face_keypoints)
 
     # Compute target geometry (exaggerated face)
     target_keypoints = face_keypoints + alpha * difference_vectors
@@ -390,4 +431,4 @@ def caricature(face_name, face, base_face_name, base_face, alpha=1.5, pick_keypo
 
     # Morph face into exagerated geometry
     exaggerated_face = morph_into('', face, face_keypoints, '', target_keypoints)
-    skio.imsave(f'../images/{face_name}_{base_face_name}_caracature.jpg', exaggerated_face)
+    skio.imsave(f'../images/{face_name}_{base_face_name}_caracature[{alpha}].jpg', exaggerated_face)
