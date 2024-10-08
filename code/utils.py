@@ -143,62 +143,119 @@ def bilinear_interpolation(img, coords):
 
     return interpolated_colors
 
+
+# Morph an image into a new shape using a given triangulation
+def morph_into(src_name, src_im, src_pts, dst_name, dst_pts, tri, save_morphed=False):
+    dst_im = np.zeros_like(src_im)
+    for i, j, k in tri.simplices:
+        dst_tri = np.array((dst_pts[i], dst_pts[j], dst_pts[k]))
+        src_tri = np.array((src_pts[i], src_pts[j], src_pts[k]))
+
+        # Get the coordinates in the destination image we are colorizing
+        row_coords, col_coords = polygon(dst_tri[:, 0], dst_tri[:, 1])
+        dst_tri_coords = np.array(list(zip(row_coords, col_coords)))
+
+        # Edge case when triangle is so "slim" it contains no pixels
+        if len(dst_tri_coords) == 0:
+            continue
+
+        # Compute inverse affine transformation matrix
+        A = compute_affine(dst_tri, src_tri)
+
+        # Apply the transformation matrices to the average triangle
+        dst_tri_coords_matrix = np.column_stack(homogeneous_coords(dst_tri_coords))
+        src_coords_matrix = A @ dst_tri_coords_matrix
+
+        # Sample colors for the preimage using bilinear interpolation
+        src_coords = src_coords_matrix[:2].T # unpack the raw coordiantes from homogeneous matrix
+        src_colors = bilinear_interpolation(src_im, src_coords)
+
+        # Assign averaged colors to the average triangle
+        for idx, (r, c) in enumerate(dst_tri_coords):
+            dst_im[r,c] = src_colors[idx]
+    
+    if save_morphed:
+        skio.imsave(f'../images/{src_name}_morphed_into_{dst_name}.jpg', dst_im)
+    
+    return dst_im
+
+# Given 2 corresponding images and a triangulation, compute an intermediate morphed image between the 2
 def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac, save_intermediate=False, save_morphed=False):
     assert im1.shape == im2.shape
     assert len(im1_pts) == len(im2_pts)
-    morphed_img1 = np.zeros_like(im1)
-    morphed_img2 = np.zeros_like(im1)
-    avg_img = np.zeros_like(im1)
 
     # Compute the intermediate shape based on the warp fraction
-    avg_pts = im2_pts * warp_frac + im1_pts * (1-warp_frac)
+    intermediate_pts = im1_pts * (1-warp_frac) + im2_pts * warp_frac
+    intermediate_identifier = f'{im1_name}-{im2_name}-warped[{warp_frac}]'
 
-    for i, j, k in tri.simplices:
-        avg_tri = np.array((avg_pts[i], avg_pts[j], avg_pts[k]))
-        img1_tri = np.array((im1_pts[i], im1_pts[j], im1_pts[k]))
-        img2_tri = np.array((im2_pts[i], im2_pts[j], im2_pts[k]))
+    # Morph both images into the intermediate shape
+    morphed_im1 = morph_into(im1_name, im1, im1_pts, intermediate_identifier, intermediate_pts, tri, save_morphed)
+    morphed_im2 = morph_into(im2_name, im2, im2_pts, intermediate_identifier, intermediate_pts, tri, save_morphed)
 
-        # Get the coordinates inside the triangle in the average image
-        row_coords, col_coords = polygon(avg_tri[:, 0], avg_tri[:, 1])
-        avg_tri_coords = np.array(list(zip(row_coords, col_coords)))
-
-
-        # Edge case when triangle is so "slim" it contains no pixels
-        if len(avg_tri_coords) == 0:
-            continue
-
-        # Compute affine transformation matrix for both images (from intermediate to source image)
-        A = compute_affine(avg_tri, img1_tri)
-        B = compute_affine(avg_tri, img2_tri)
-
-        # Apply the transformation matrices to the average triangle
-        avg_tri_coords_matrix = np.column_stack(homogeneous_coords(avg_tri_coords))
-        img1_preimage_coords_matrix = A @ avg_tri_coords_matrix
-        img2_preimage_coords_matrix = B @ avg_tri_coords_matrix
-
-        # Sample colors for each preimage using bilinear interpolation
-        img1_preimage_coords = img1_preimage_coords_matrix[:2].T # unpack the raw coordiantes from homogeneous matrix
-        img2_preimage_coords = img2_preimage_coords_matrix[:2].T
-        img1_preimage_colors = bilinear_interpolation(im1, img1_preimage_coords)
-        img2_preimage_colors = bilinear_interpolation(im2, img2_preimage_coords)
-
-        # Assign averaged colors to the average triangle
-        averaged_colors = img2_preimage_colors * dissolve_frac + img1_preimage_colors * (1-dissolve_frac)
-        for idx, (r, c) in enumerate(avg_tri_coords):
-            morphed_img1[r,c] = img1_preimage_colors[idx]
-            morphed_img2[r,c] = img2_preimage_colors[idx]
-            avg_img[r,c] = averaged_colors[idx]
-
+    # Cross dissolve the morphed images to add color
+    intermediate_im = morphed_im1.astype(np.float32) * (1-dissolve_frac) + morphed_im2.astype(np.float32) * dissolve_frac
     if save_intermediate:
-        # Save midway image
-        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', avg_img)
+        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', intermediate_im)
+    return intermediate_im.astype(np.uint8)
+
+
+# Given 2 corresponding images and a triangulation, compute an intermediate morphed image between the 2
+# def compute_intermediate(im1_name, im2_name, im1, im2, im1_pts, im2_pts, tri, warp_frac, dissolve_frac, save_intermediate=False, save_morphed=False):
+#     assert im1.shape == im2.shape
+#     assert len(im1_pts) == len(im2_pts)
+#     morphed_img1 = np.zeros_like(im1)
+#     morphed_img2 = np.zeros_like(im1)
+#     avg_img = np.zeros_like(im1)
+
+#     # Compute the intermediate shape based on the warp fraction
+#     avg_pts = im2_pts * warp_frac + im1_pts * (1-warp_frac)
+
+#     for i, j, k in tri.simplices:
+#         avg_tri = np.array((avg_pts[i], avg_pts[j], avg_pts[k]))
+#         img1_tri = np.array((im1_pts[i], im1_pts[j], im1_pts[k]))
+#         img2_tri = np.array((im2_pts[i], im2_pts[j], im2_pts[k]))
+
+#         # Get the coordinates inside the triangle in the average image
+#         row_coords, col_coords = polygon(avg_tri[:, 0], avg_tri[:, 1])
+#         avg_tri_coords = np.array(list(zip(row_coords, col_coords)))
+
+
+#         # Edge case when triangle is so "slim" it contains no pixels
+#         if len(avg_tri_coords) == 0:
+#             continue
+
+#         # Compute affine transformation matrix for both images (from intermediate to source image)
+#         A = compute_affine(avg_tri, img1_tri)
+#         B = compute_affine(avg_tri, img2_tri)
+
+#         # Apply the transformation matrices to the average triangle
+#         avg_tri_coords_matrix = np.column_stack(homogeneous_coords(avg_tri_coords))
+#         img1_preimage_coords_matrix = A @ avg_tri_coords_matrix
+#         img2_preimage_coords_matrix = B @ avg_tri_coords_matrix
+
+#         # Sample colors for each preimage using bilinear interpolation
+#         img1_preimage_coords = img1_preimage_coords_matrix[:2].T # unpack the raw coordiantes from homogeneous matrix
+#         img2_preimage_coords = img2_preimage_coords_matrix[:2].T
+#         img1_preimage_colors = bilinear_interpolation(im1, img1_preimage_coords)
+#         img2_preimage_colors = bilinear_interpolation(im2, img2_preimage_coords)
+
+#         # Assign averaged colors to the average triangle
+#         averaged_colors = img2_preimage_colors * dissolve_frac + img1_preimage_colors * (1-dissolve_frac)
+#         for idx, (r, c) in enumerate(avg_tri_coords):
+#             morphed_img1[r,c] = img1_preimage_colors[idx]
+#             morphed_img2[r,c] = img2_preimage_colors[idx]
+#             avg_img[r,c] = averaged_colors[idx]
+
+#     if save_intermediate:
+#         # Save midway image
+#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_intermediate.jpg', avg_img)
     
-    if save_morphed:
-        # Save image1 and image2 morphed into the shape of the intermediate
-        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im1_name}_intermediate.jpg', morphed_img1)
-        skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im2_name}_intermediate.jpg', morphed_img2)
+#     if save_morphed:
+#         # Save image1 and image2 morphed into the shape of the intermediate
+#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im1_name}_intermediate.jpg', morphed_img1)
+#         skio.imsave(f'../images/{im1_name}_{im2_name}[{warp_frac}:{dissolve_frac}]_{im2_name}_intermediate.jpg', morphed_img2)
     
-    return avg_img
+#     return avg_img
 
 
 def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve_frac=1/45, frames=45):
@@ -240,7 +297,6 @@ def morph_multi(im_names, ims, corresponding_keypoints, warp_frac=1/45, dissolve
         im1_pts, im2_pts = corresponding_keypoints[i]
         avg_pts = (im1_pts + im2_pts) / 2
         triangulation = Delaunay(avg_pts)
-        # display_triangulation(avg_pts, triangulation)
         for t in range(frames+1):
             morph_sequence.append(compute_intermediate(
                 im1_name, im2_name, im1, im2, im1_pts, im2_pts, triangulation, warp_frac * t, dissolve_frac * t
